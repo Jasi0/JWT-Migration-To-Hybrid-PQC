@@ -1,0 +1,11 @@
+com/example/common/JsonUtil.class
+com/example/common/PqcKeyDescriptor.class
+com/example/common/HybridDualSignature$SignatureEntry.class
+com/example/common/HybridPolicy.class
+com/example/common/Base64Url.class
+com/example/common/VerificationOptions.class
+com/example/common/HybridEnvelope.class
+com/example/common/RsaJwkPublic.class
+com/example/common/HybridDualSignature.class
+com/example/common/JwtClaims.class
+com/example/common/TokenHeader.class
