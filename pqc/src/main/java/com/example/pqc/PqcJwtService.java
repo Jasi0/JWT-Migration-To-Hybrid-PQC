@@ -20,7 +20,7 @@ import com.example.common.TokenHeader;
 import com.example.common.VerificationOptions;
 
 
- // PQC JWS-compact-like service using Dilithium2 (FIPS) via BouncyCastle PQC provider
+ // PQC JWS-compact-like service using ML-DSA-44 (Dilithium2 params) via BouncyCastle PQC provider
 public class PqcJwtService {
 
     static {
@@ -30,7 +30,7 @@ public class PqcJwtService {
     }
 
     /**
-     * Create a DILITHIUM2 token with a JWS-compact-like structure.
+     * Create an MLDSA44 token with a JWS-compact-like structure.
      * @param claims 
      * @param priv
      * @return 
@@ -42,8 +42,8 @@ public class PqcJwtService {
         }
         claims.validateStructure();
 
-        TokenHeader header = new TokenHeader("DILITHIUM2", "JWT", kid);
-        header.validateForPqc();
+        TokenHeader header = new TokenHeader("MLDSA44", "JWT", kid);
+        header.validatePqc();
 
         String headerJson = JsonUtil.toJson(header);
         String payloadJson = JsonUtil.toJson(flattenClaims(claims));
@@ -59,7 +59,7 @@ public class PqcJwtService {
     }
 
     /**
-     * Verify a DILITHIUM2 token and validate temporal claims with skew and optional issuer.
+     * Verify an MLDSA44 token and validate temporal claims with skew and optional issuer.
      * Throws RuntimeException/IllegalStateException on verification failure.
      * @param token 
      * @param publicKey 
@@ -83,13 +83,13 @@ public class PqcJwtService {
 
         String headerJson = new String(Base64Url.decode(headerB64), StandardCharsets.UTF_8);
         TokenHeader header = JsonUtil.fromJson(headerJson, TokenHeader.class);
-        header.validateForPqc();
+        header.validatePqc();
 
         byte[] signature = Base64Url.decode(sigB64);
         String signingInput = headerB64 + "." + payloadB64;
 
         if (!verifyMldsa(signingInput.getBytes(StandardCharsets.US_ASCII), signature, publicKey)) {
-            throw new IllegalStateException("Invalid Dilithium signature");
+            throw new IllegalStateException("Invalid MLDSA44 signature");
         }
 
         // Parse and validate claims

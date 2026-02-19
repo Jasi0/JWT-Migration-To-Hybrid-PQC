@@ -18,6 +18,7 @@
     <module>common</module>
     <module>rsa</module>
     <module>pqc</module>
+    <module>hybrid</module>
     <module>app</module>
   </modules>
 

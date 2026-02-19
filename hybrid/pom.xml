@@ -1,52 +1,58 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- App module: executable CLI + minimal HTTP server -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
-                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
     <groupId>com.example</groupId>
     <artifactId>jwt-pqc-demo</artifactId>
     <version>1.0.0-SNAPSHOT</version>
-    <relativePath>..</relativePath>
   </parent>
 
-  <artifactId>app</artifactId>
-  <name>JWT PQC Hybrid Demo - App Module</name>
+  <artifactId>hybrid</artifactId>
+  <name>JWT PQC Hybrid Demo - Composite Hybrid Module</name>
+  <description>Composite JWT (RS256+MLDSA44) implementation with signature packing</description>
   <packaging>jar</packaging>
 
   <dependencies>
-    <!-- Module dependencies -->
     <dependency>
       <groupId>com.example</groupId>
       <artifactId>common</artifactId>
       <version>${project.version}</version>
     </dependency>
+
     <dependency>
       <groupId>com.example</groupId>
       <artifactId>rsa</artifactId>
       <version>${project.version}</version>
     </dependency>
+
     <dependency>
       <groupId>com.example</groupId>
       <artifactId>pqc</artifactId>
       <version>${project.version}</version>
     </dependency>
-    <dependency>
-      <groupId>com.example</groupId>
-      <artifactId>hybrid</artifactId>
-      <version>${project.version}</version>
-    </dependency>
 
-    <!-- JSON -->
+    <!-- Jackson for JSON handling (from parent dependencyManagement) -->
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
     </dependency>
 
-    <!-- Testing -->
+    <!-- Bouncy Castle provider (already provided by pqc), keep as provided if needed -->
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcprov-jdk18on</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- JUnit 5 for tests -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
@@ -56,20 +62,11 @@
 
   <build>
     <plugins>
-      <!-- Inherit compiler/surefire from parent pluginManagement -->
       <plugin>
-        <groupId>org.codehaus.mojo</groupId>
-        <artifactId>exec-maven-plugin</artifactId>
-        <executions>
-          <execution>
-            <goals>
-              <goal>java</goal>
-            </goals>
-          </execution>
-        </executions>
-        <configuration>
-          <mainClass>com.example.app.AppMain</mainClass>
-        </configuration>
+        <artifactId>maven-compiler-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <artifactId>maven-surefire-plugin</artifactId>
       </plugin>
     </plugins>
   </build>

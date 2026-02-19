@@ -1,200 +1,175 @@
 # Implementation Plan
 
 [Overview]
-Create a Maven multi-module Java 17 project that demonstrates both classical JWT (RS256 via java-jwt) and a pragmatic PQC-safe JWS-compact-like token using Dilithium2 via Bouncy Castle PQC, plus an executable app that issues/verifies both, serves minimal HTTP endpoints (including JWKS-like publishing), and prints verification outcomes and signature size comparisons.
+Migrate the demo from a custom JWS-JSON dual-signature envelope to a single compact JWT with a composite signature algorithm "RS256+MLDSA44", standardizing PQC naming and adding precise size measurements.
 
-This project migrates from a single-file demo (JwtExample.java) to a structured, runnable, and testable setup. It preserves standard JWT interoperability for RS256 using the java-jwt library while adding a parallel PQC pipeline that emits tokens in the familiar JWS Compact shape but with alg=DILITHIUM2 and custom verification logic using the Bouncy Castle PQC provider (BCPQC). The app module runs a minimal built-in JDK HTTP server exposing classical JWKS and a PQC-keys endpoint (clearly marked non-standard), plus issuance/verification endpoints and a CLI flow that showcases both variants and their sizes.
-
-The envelope approach is used for hybrid demonstration: the app issues a pair of tokens together—one standard JWT (RS256) and one PQC token—and verifies both independently. This enables gradual migration because existing consumers can keep using the classical token while PQC-aware consumers adopt the DILITHIUM2 variant.
+This plan responds directly to the review feedback by removing repository-style documentation from the thesis chapter and aligning the implementation with a practical migration path: a composite algorithm that preserves the external JWT compact structure. The codebase will standardize on ML-DSA-44 (NIST naming) instead of "Dilithium2" in headers and documentation, while continuing to use the Bouncy Castle provider algorithm "DILITHIUM" internally for JCA calls. PQC public keys will be published via a separate, non-standard endpoint using neutral fields (no "crv" misuse). The composite signature packs RS256 and ML-DSA-44 signatures into a single Base64URL blob following a deterministic byte format. The app will output exact header, payload, and signature sizes and write a CSV for thesis use. The verification logic will remain claim-agnostic and isolated from algorithm choice.
 
 [Types]  
-Define explicit DTOs and helper types to ensure clear data flow and validation.
+Introduce composite algorithm and signature packing, standardize header alg values, and define a neutral PQC key descriptor.
 
-- Package com.example.common (in common module)
-  - class JwtClaims
-    - String iss (issuer, optional but recommended)
-    - String sub (subject, optional)
-    - Long iat (Issued At, epoch seconds; optional)
-    - Long exp (Expiration, epoch seconds; optional)
-    - Long nbf (Not Before, epoch seconds; optional)
-    - Map<String, Object> custom (optional, may be empty)
-    - Validation: exp > iat if both present; nbf <= exp if both present; values non-negative if present
-  - class VerificationOptions
-    - String expectedIssuer (nullable)
-    - int clockSkewSeconds (>= 0; default 60)
-    - boolean requireExpiration (default true)
-    - boolean validateIssuedAt (default true)
-  - class HybridEnvelope
-    - String classicToken (non-null)
-    - String pqcToken (non-null)
-    - String classicAlg (value "RS256")
-    - String pqcAlg (fixed "DILITHIUM2")
-    - String classicKid (nullable)
-    - String pqcKid (nullable)
-    - Long issuedAt (epoch seconds)
-    - Long expiresAt (epoch seconds)
-    - String issuer
-    - String subject
-    - int classicSignatureSizeBytes
-    - int pqcSignatureSizeBytes
-  - class TokenHeader
-    - String alg (required)
-    - String typ (default "JWT")
-    - String kid (optional)
-    - Validation: alg must be exactly "DILITHIUM2" for PQC tokens; strictly checked to avoid downgrade
-  - class RsaJwkPublic
-    - String kty = "RSA"
-    - String n (base64url modulus)
-    - String e (base64url exponent)
-    - String alg = "RS256"
-    - String kid (optional, recommended)
-  - class PqcKeyDescriptor (JWKS-like but non-standard)
-    - String kty = "PQC"
-    - String crv = "Dilithium2"
-    - String alg = "DILITHIUM2"
-    - String pk (base64url public key bytes)
-    - String kid (optional, recommended)
-    - NOTE: non-standard and clearly named to avoid misinterpretation by classical validators
+- TokenHeader (common/src/main/java/com/example/common/TokenHeader.java)
+  - Fields:
+    - alg: String
+      - Valid values: "RS256", "MLDSA44", "RS256+MLDSA44"
+    - typ: String, default "JWT"
+    - kid: String, optional
+  - Methods:
+    - validateClassic(): requires alg="RS256" and typ=="JWT" if present
+    - validatePqc(): requires alg="MLDSA44" and typ=="JWT" if present
+    - validateComposite(): requires alg="RS256+MLDSA44" and typ=="JWT" if present
+
+- Composite signature format (binary, then Base64URL in JWT signature)
+  - Magic: ASCII "CMB1" (4 bytes)
+  - rs_len: 4 bytes unsigned big-endian length of RS256 signature
+  - rs_sig: rs_len bytes (RSA PKCS#1 v1.5 signature size equals modulus length, e.g., 256 bytes for 2048-bit)
+  - pqc_len: 4 bytes unsigned big-endian length of ML-DSA-44 signature
+  - pqc_sig: pqc_len bytes
+  - Final signature part (JWT third segment): Base64URL(CMB1 || rs_len || rs_sig || pqc_len || pqc_sig), no padding
+
+- CompositeKey (hybrid/src/main/java/com/example/hybrid/CompositeKey.java)
+  - Fields:
+    - rsaPublic: RSAPublicKey
+    - rsaPrivate: RSAPrivateKey
+    - pqcPublic: PublicKey (BCPQC Dilithium public key)
+    - pqcPrivate: PrivateKey (BCPQC Dilithium private key)
+    - kid: String (Base64URL(SHA-256(concat(rsaPublic.getEncoded(), pqcPublic.getEncoded()))))
+  - Methods:
+    - validate(): ensures non-null keys and kid
+
+- PqcKeyDescriptor (common/src/main/java/com/example/common/PqcKeyDescriptor.java)
+  - Fields (neutral, non-JWKS):
+    - kty: fixed "PQC"
+    - sig: fixed "ML-DSA-44"
+    - providerAlg: fixed "DILITHIUM" (internal JCA algorithm name)
+    - param: fixed "dilithium2"
+    - pk: Base64URL(publicKey.getEncoded())
+    - kid: optional
+  - Methods:
+    - validate(): enforces fixed fields and pk present
+
+- VerificationOptions (existing)
+  - Unchanged fields; verification is algorithm-independent.
 
 [Files]
-Add a new Maven multi-module project with dedicated modules for shared DTOs, RSA/HS (classical), PQC, and an executable app; remove the old root-level single-file demo afterward.
+Create a new hybrid module, remove envelope artifacts, and update PQC naming consistently.
 
-- New top-level files:
-  - pom.xml (parent, packaging=pom)
-    - Java 17, dependencyManagement for versions, modules: common, rsa, pqc, app
-    - Plugins: maven-compiler-plugin, maven-surefire-plugin, exec-maven-plugin (in app)
-- New module: common/
-  - common/pom.xml
-  - common/src/main/java/com/example/common/JwtClaims.java
-  - common/src/main/java/com/example/common/VerificationOptions.java
-  - common/src/main/java/com/example/common/HybridEnvelope.java
+- New files to be created:
+  - hybrid/pom.xml
+    - Maven module for composite algorithm implementation, depends on common, rsa, pqc.
+  - hybrid/src/main/java/com/example/hybrid/CompositeKeyManager.java
+    - Generates RSA and ML-DSA-44 key pairs, computes composite kid, constructs CompositeKey.
+  - hybrid/src/main/java/com/example/hybrid/CompositeJwtService.java
+    - Builds compact JWT with alg="RS256+MLDSA44"; signs both algorithms; packs signatures in CMB1 format; verifies with policy.
+  - app/src/main/java/com/example/app/TokenSizeReport.java
+    - Utility to compute exact sizes (raw and Base64URL) and write CSV rows.
+
+- Existing files to be modified:
+  - pom.xml (parent)
+    - Add <module>hybrid</module>.
   - common/src/main/java/com/example/common/TokenHeader.java
-  - common/src/main/java/com/example/common/RsaJwkPublic.java
+    - Add validateComposite(), restrict PQC to "MLDSA44"; remove acceptance of "DILITHIUM2".
   - common/src/main/java/com/example/common/PqcKeyDescriptor.java
-  - common/src/main/java/com/example/common/JsonUtil.java (Jackson wrapper for shared use)
-- New module: rsa/
-  - rsa/pom.xml
-  - rsa/src/main/java/com/example/rsa/JwtRsaService.java
-  - rsa/src/main/java/com/example/rsa/RsaKeyManager.java
-  - rsa/src/test/java/com/example/rsa/JwtRsaServiceTest.java
-- New module: pqc/
-  - pqc/pom.xml
-  - pqc/src/main/java/com/example/pqc/PqcKeyManager.java
+    - Replace fields with neutral names: sig, providerAlg, param; remove "crv" field; set fixed values; update validate().
   - pqc/src/main/java/com/example/pqc/PqcJwtService.java
-  - pqc/src/main/java/com/example/pqc/Base64Url.java (utility for no-padding URL-safe)
-  - pqc/src/test/java/com/example/pqc/PqcJwtServiceTest.java
-- New module: app/
-  - app/pom.xml
-  - app/src/main/java/com/example/app/AppMain.java (CLI + server bootstrap)
-  - app/src/main/java/com/example/app/HttpServerApp.java (minimal HTTP server)
-  - app/src/main/java/com/example/app/handlers/IssueHandler.java (issue both tokens)
-  - app/src/main/java/com/example/app/handlers/VerifyHandler.java (verify both)
-  - app/src/main/java/com/example/app/handlers/JwksHandler.java (classical RSA JWKS)
-  - app/src/main/java/com/example/app/handlers/PqcKeysHandler.java (PQC-keys descriptor)
-  - app/src/main/java/com/example/app/Config.java (clock skew, alg selection HS/RS)
-  - app/src/test/java/com/example/app/EnvelopeIntegrationTest.java
-- Existing file to be moved/removed:
-  - JwtExample.java (root)
-    - Action: Replace by module-specific services; delete or archive in docs/examples after implementation to avoid confusion.
-- Configuration updates:
-  - Dependency versions centralized in parent pom
-  - BouncyCastle providers added in pqc module runtime; provider registration occurs programmatically at startup
+    - Change header alg from "DILITHIUM2" to "MLDSA44"; keep Signature.getInstance("DILITHIUM","BCPQC"); rename method/strings accordingly.
+  - app/src/main/java/com/example/app/AppMain.java
+    - Replace HybridService usage with CompositeJwtService; stop printing full tokens; produce CSV with exact sizes; standardize printed labels to RS256, MLDSA44, RS256+MLDSA44.
+  - rsa/src/main/java/com/example/rsa/JwtRsaService.java
+    - No functional change; ensure algorithm binding commentary aligns with composite verification.
+
+- Files to be deleted or moved:
+  - app/src/main/java/com/example/app/HybridService.java (delete)
+  - common/src/main/java/com/example/common/HybridDualSignature.java (delete)
+  - common/src/main/java/com/example/common/HybridEnvelope.java (delete)
+  - rsa/src/main/java/com/example/rsa/JwtHmacService.java (delete file or leave as empty only if required by build; recommended delete)
+
+- Configuration file updates:
+  - Ensure Bouncy Castle repository remains in parent POM; no new external dependencies.
+  - hybrid/pom.xml: declare dependencies on common, rsa, pqc.
 
 [Functions]
-Introduce services for token creation/verification and HTTP handlers; enforce algorithm binding and time-based claim validation with skew.
+Add composite token creation/verification and CSV reporting; update PQC alg naming.
 
-- common module
-  - JsonUtil
-    - static String toJson(Object)
-    - static <T> T fromJson(String, Class<T>)
-- rsa module
-  - JwtRsaService
-    - String createRs256Token(JwtClaims claims, RSAPrivateKey privateKey, String kid)
-    - DecodedJWT verifyRs256Token(String token, RSAPublicKey publicKey, VerificationOptions opts)
-  - RsaKeyManager
-    - KeyPair generate(int keySize) // default 3072
-    - String computeKid(RSAPublicKey pub) // e.g., base64url(SHA-256 of modulus)
-    - RsaJwkPublic toJwk(RSAPublicKey pub, String kid)
-- pqc module
-  - PqcKeyManager
-    - KeyPair generate() // DilithiumParameterSpec.dilithium2 via BCPQC
-    - String computeKid(PublicKey pub) // base64url(SHA-256 of encoded key)
-    - PqcKeyDescriptor describe(PublicKey pub, String kid)
-  - PqcJwtService
-    - String createToken(JwtClaims claims, PrivateKey priv, String kid)
-      - Steps: build header {"alg":"DILITHIUM2","typ":"JWT","kid":kid}, serialize payload (JSON), base64url both (no padding), sign header.payload using Signature.getInstance("DILITHIUM","BCPQC"), output header.payload.signature
-    - void verifyToken(String token, PublicKey pub, VerificationOptions opts)
-      - Steps: parse sections, decode header JSON, require alg == "DILITHIUM2", verify signature, JSON parse payload, validate temporal claims with opts.clockSkewSeconds, expectedIssuer if provided
-  - Base64Url
-    - static String encode(byte[] bytes)
-    - static byte[] decode(String s)
-- app module
-  - AppMain
-    - main(String[] args): bootstrap provider(s), generate keys, create sample claims, issue classical + PQC tokens, verify both, print sizes; start HTTP server
-  - HttpServerApp
-    - start(int port, dependencies): registers contexts and handlers
-  - IssueHandler
-    - handle: creates HybridEnvelope (select RS256 via Config), returns JSON with tokens and sizes
-  - VerifyHandler
-    - handle: accepts JSON body with tokens; verifies both; returns verification result
-  - JwksHandler
-    - handle: returns JWKS with current RSA public key (n, e, alg=RS256, kid)
-  - PqcKeysHandler
-    - handle: returns non-standard PQC key descriptor (kty=PQC, crv=Dilithium2, alg=DILITHIUM2, pk, kid)
+- New functions:
+  - CompositeJwtService.createCompositeToken(JwtClaims claims, CompositeKey key): String
+    - Purpose: Produce compact JWT header.payload.signature with header.alg="RS256+MLDSA44" and signature packing both algorithms.
+  - CompositeJwtService.verifyCompositeToken(String token, CompositeKey key, VerificationOptions opts, CompositePolicy policy): void
+    - Purpose: Parse CMB1 signature, verify RS256 and ML-DSA-44 per policy; validate claims and issuer/skew identical to other services.
+  - CompositeKeyManager.generate(int rsaBits): CompositeKey
+    - Purpose: Generate RSA and ML-DSA-44 key pairs and compute a composite kid.
+  - TokenSizeReport.writeCsvRow(String label, int headerRaw, int payloadRaw, int signatureRaw, int headerB64, int payloadB64, int signatureB64): void
+    - Purpose: Append to app/target/token_sizes.csv; label is "RS256", "MLDSA44", or "RS256+MLDSA44".
+
+- Modified functions:
+  - TokenHeader.validateForPqc() -> validatePqc(): enforce alg=="MLDSA44".
+  - PqcJwtService.createToken(...): set header.alg="MLDSA44".
+  - AppMain.main(...): use CompositeJwtService; compute and write CSV; do not log full tokens.
+
+- Removed functions:
+  - HybridService.createHybrid(...), HybridService.verifyHybrid(...): replaced by CompositeJwtService API.
+  - HybridDualSignature.SignatureEntry and envelope accessors: obsolete.
 
 [Classes]
-Add service classes per module and DTOs as specified; no inheritance beyond JDK types; composition over inheritance.
+Introduce composite classes, adjust header and PQC descriptor, remove envelope classes.
 
-- New classes: all listed in [Files] with methods in [Functions]
-- Modified classes: none (the original JwtExample.java is superseded)
-- Removed classes: JwtExample.java (reason: absorbed into rsa services); migration strategy: functionality preserved and extended in rsa module; references updated in app module
+- New classes:
+  - CompositePolicy (hybrid/src/main/java/com/example/hybrid/CompositePolicy.java)
+    - Enum values: CLASSIC_ONLY, PQC_ONLY, BOTH_REQUIRED, AT_LEAST_ONE
+  - CompositeKey (hybrid/src/main/java/com/example/hybrid/CompositeKey.java)
+    - Holds RSA and ML-DSA-44 key pair tuple and composite kid.
+  - CompositeKeyManager (hybrid/src/main/java/com/example/hybrid/CompositeKeyManager.java)
+    - Generates keys and kid; registers BCPQC provider if needed.
+  - CompositeJwtService (hybrid/src/main/java/com/example/hybrid/CompositeJwtService.java)
+    - Key methods:
+      - packCompositeSignature(byte[] rsSig, byte[] pqcSig): byte[]
+      - unpackCompositeSignature(byte[] sig): Pair<byte[], byte[]>
+      - signRs256(byte[] input, RSAPrivateKey priv): byte[]
+      - signMldsa44(byte[] input, PrivateKey priv): byte[]
+      - verifyRs256(byte[] input, byte[] sig, RSAPublicKey pub): boolean
+      - verifyMldsa44(byte[] input, byte[] sig, PublicKey pub): boolean
+
+- Modified classes:
+  - TokenHeader: add validateComposite(); restrict PQC alg name; javadoc updated to ML-DSA-44.
+  - PqcKeyDescriptor: rename fields; validation updated; javadoc notes neutral endpoint and avoidance of JWKS crv misuse.
+
+- Removed classes:
+  - HybridService (app)
+  - HybridDualSignature (common)
+  - HybridEnvelope (common)
+  - JwtHmacService (rsa) if not needed
 
 [Dependencies]
-Add java-jwt for classical JWT; Jackson for JSON; Bouncy Castle providers for PQC; JUnit 5 for tests.
+No new external dependencies; reuse existing Bouncy Castle PQC provider and Jackson.
 
-- Parent pom (dependencyManagement with versions)
-  - com.auth0: java-jwt: 4.4.0
-  - com.fasterxml.jackson.core: jackson-databind: 2.17.1
-  - org.bouncycastle: bcprov-jdk18on: 1.78.1
-  - org.bouncycastle: bcpkix-jdk18on: 1.78.1
-  - org.bouncycastle: bcpqc-jdk18on: 1.78.1
-  - org.junit.jupiter: junit-jupiter: 5.10.2
-- common module
-  - com.fasterxml.jackson.core: jackson-databind
-- rsa module
-  - com.auth0: java-jwt
-  - com.fasterxml.jackson.core: jackson-databind (test/help)
-  - com.example: common (module dependency)
-- pqc module
-  - org.bouncycastle: bcprov-jdk18on
-  - org.bouncycastle: bcpkix-jdk18on
-  - org.bouncycastle: bcpqc-jdk18on
-  - com.fasterxml.jackson.core: jackson-databind
-  - com.example: common (module dependency)
-- app module
-  - module dependencies on common, rsa and pqc
-  - No web framework dependency; use com.sun.net.httpserver.HttpServer (JDK)
+- Parent POM:
+  - Add hybrid module.
+- hybrid/pom.xml:
+  - Dependencies:
+    - com.example:common
+    - com.example:rsa
+    - com.example:pqc
 
 [Testing]
-Adopt JUnit 5; cover creation/verification flows, temporal claim validation with skew, algorithm binding enforcement, and HTTP endpoints.
+Add unit tests for composite creation/verification and ensure claims logic remains algorithm-agnostic; verify exact size outputs and CSV generation.
 
-- rsa tests
-  - RS256: happy path create/verify; bad issuer; expired with/without skew; key mismatch negative case
-- pqc tests
-  - DILITHIUM2: create/verify; tampered signature; alg header mismatch; payload tamper; temporal claim validation with clock skew
-- app integration tests
-  - Start server on random port; GET /jwks returns expected RSA JWK; GET /pqckeys returns PQC descriptor
-  - POST /issue returns HybridEnvelope with both tokens
-  - POST /verify (with issued tokens) returns success for both
-- Also assert signature size comparisons are printed or present in JSON (pqc signature significantly larger than RS256)
+- New test files:
+  - hybrid/src/test/java/com/example/hybrid/CompositeJwtServiceTest.java
+    - Tests: create/verify with all policies; invalid signature packing; claims validation edge cases.
+  - app/src/test/java/com/example/app/TokenSizeReportTest.java
+    - Tests: CSV line formatting; size calculations.
+  - pqc/src/test/java/com/example/pqc/PqcJwtServiceTest.java
+    - Update tests to alg="MLDSA44".
+- Manual demo:
+  - AppMain prints exact sizes and writes app/target/token_sizes.csv; do not print full tokens to avoid logging sensitive data.
 
 [Implementation Order]
-Scaffold Maven project first, then build capabilities per module with tests, finally wire HTTP server and end-to-end demo.
+Implement composite types and services first, then replace app flows, then remove envelope artifacts, then finalize naming and size reporting.
 
-1) Initialize parent pom with modules common, rsa, pqc, app; set Java 17 and managed versions.
-2) Implement common module (DTOs + JsonUtil).
-3) Implement rsa module (HMAC, RSA services, key manager) + unit tests; green build.
-4) Implement pqc module (provider registration, key manager, Base64Url, PQC-JWS create/verify) + unit tests; green build.
-5) Implement app module (CLI printout, HTTP server and handlers) + integration tests.
-6) Remove/retire root JwtExample.java and add README with run instructions.
-7) Final verification: mvn -q -DskipTests=false test; then run app to see tokens and endpoints.
+1. Add hybrid module to parent pom.xml.
+2. Implement CompositeKey, CompositePolicy, CompositeKeyManager, CompositeJwtService (pack/unpack CMB1, signing/verification).
+3. Update TokenHeader (validateComposite, strict PQC alg) and PqcKeyDescriptor (neutral fields) and PqcJwtService (alg="MLDSA44").
+4. Modify AppMain to use CompositeJwtService; add TokenSizeReport and CSV output; stop logging full tokens.
+5. Remove HybridService, HybridDualSignature, and HybridEnvelope; ensure build passes without these.
+6. Add and run unit tests for composite and size reporting.
+7. Run the demo; collect exact sizes for RS256, MLDSA44, and RS256+MLDSA44; confirm CSV generation.

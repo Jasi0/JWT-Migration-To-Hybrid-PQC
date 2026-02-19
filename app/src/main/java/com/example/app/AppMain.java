@@ -1,5 +1,18 @@
 package com.example.app;
 
+import com.auth0.jwt.interfaces.DecodedJWT;
+import com.example.common.Base64Url;
+import com.example.common.JwtClaims;
+import com.example.common.VerificationOptions;
+import com.example.hybrid.CompositeJwtService;
+import com.example.hybrid.CompositeKey;
+import com.example.hybrid.CompositeKeyManager;
+import com.example.hybrid.CompositePolicy;
+import com.example.pqc.PqcJwtService;
+import com.example.pqc.PqcKeyManager;
+import com.example.rsa.JwtRsaService;
+import com.example.rsa.RsaKeyManager;
+
 import java.security.KeyPair;
 import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
@@ -7,23 +20,10 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 
-import com.auth0.jwt.interfaces.DecodedJWT;
-import com.example.common.Base64Url;
-import com.example.common.HybridDualSignature;
-import com.example.common.HybridPolicy;
-import com.example.common.JsonUtil;
-import com.example.common.JwtClaims;
-import com.example.common.TokenHeader;
-import com.example.common.VerificationOptions;
-import com.example.pqc.PqcJwtService;
-import com.example.pqc.PqcKeyManager;
-import com.example.rsa.JwtRsaService;
-import com.example.rsa.RsaKeyManager;
-
 public class AppMain {
 
     public static void main(String[] args) {
-        System.out.println("=== JWT PQC Hybrid Demo ===");
+        System.out.println("=== JWT PQC Composite Demo (RS256 + MLDSA44) ===");
         try {
             // Common claims
             long now = Instant.now().getEpochSecond();
@@ -31,7 +31,7 @@ public class AppMain {
             claims.setIss("demo-issuer");
             claims.setSub("alice");
             claims.setIat(now);
-            claims.setExp(now + 600); 
+            claims.setExp(now + 600); // 10 minutes
 
             Map<String, Object> custom = new HashMap<>();
             custom.put("role", "admin");
@@ -43,61 +43,48 @@ public class AppMain {
             opts.setValidateIssuedAt(true);
             opts.setRequireExpiration(true);
 
-            //RSA (RS256) 
+            // RSA (RS256) classical flow
             System.out.println("\n-- RS256 flow --");
             RsaKeyManager rsaKeyManager = new RsaKeyManager();
             KeyPair rsaKeyPair = rsaKeyManager.generate(2048);
             RSAPrivateKey rsaPriv = (RSAPrivateKey) rsaKeyPair.getPrivate();
             RSAPublicKey rsaPub = (RSAPublicKey) rsaKeyPair.getPublic();
             String rsaKid = rsaKeyManager.computeKid(rsaPub);
+
             JwtRsaService jwtRsaService = new JwtRsaService();
             String rsaToken = jwtRsaService.createRs256Token(claims, rsaPriv, rsaKid);
-            System.out.println("RS256 token (compact): " + rsaToken);
-            printTokenParts("RS256", rsaToken);
+            printSizesAndCsv("RS256", rsaToken);
             DecodedJWT rsaVerified = jwtRsaService.verifyRs256Token(rsaToken, rsaPub, opts);
             System.out.println("RS256 verification: OK, subject=" + rsaVerified.getSubject());
 
-            //PQC ML-DSA 
-            System.out.println("\n-- PQC Dilithium2 flow --");
+            // PQC ML-DSA-44 (Dilithium2 params via BCPQC)
+            System.out.println("\n-- MLDSA44 flow --");
             PqcKeyManager pqcKeyManager = new PqcKeyManager();
             KeyPair pqcKeyPair = pqcKeyManager.generate();
             String pqcKid = pqcKeyManager.computeKid(pqcKeyPair.getPublic());
             PqcJwtService pqcJwtService = new PqcJwtService();
             String pqcToken = pqcJwtService.createToken(claims, pqcKeyPair.getPrivate(), pqcKid);
-            System.out.println("DILITHIUM2 token (compact): " + pqcToken);
-            printTokenParts("DILITHIUM2", pqcToken);
+            printSizesAndCsv("MLDSA44", pqcToken);
             pqcJwtService.verifyToken(pqcToken, pqcKeyPair.getPublic(), opts);
-            System.out.println("DILITHIUM2 verification: OK");
+            System.out.println("MLDSA44 verification: OK");
 
+            // Composite compact JWT (RS256+MLDSA44)
+            System.out.println("\n-- Composite compact JWT (RS256+MLDSA44) --");
+            CompositeKeyManager compositeKeyManager = new CompositeKeyManager();
+            CompositeKey compositeKey = compositeKeyManager.generate(2048);
+            CompositeJwtService compositeService = new CompositeJwtService();
+            String compositeToken = compositeService.createCompositeToken(claims, compositeKey);
+            printSizesAndCsv("RS256+MLDSA44", compositeToken);
 
-            // Hybrid Dual-Signature (RS256 + DILITHIUM2)
-            System.out.println("\n-- Hybrid Dual-Signature (RS256 + DILITHIUM2) --");
-            HybridService hybridService = new HybridService();
-            HybridDualSignature hds = hybridService.createHybrid(
-                    claims,
-                    rsaPriv, rsaKid,
-                    pqcKeyPair.getPrivate(), pqcKid
-            );
-            // Print sizes
-            String hdsJson = com.example.common.JsonUtil.toJson(hds);
-            System.out.println("Hybrid JSON (compact overview):");
-            System.out.println(hdsJson);
-            byte[] protBytes = com.example.common.Base64Url.decode(hds.getProtectedB64());
-            byte[] paylBytes = com.example.common.Base64Url.decode(hds.getPayloadB64());
-            System.out.println("Hybrid protected size (bytes)=" + protBytes.length);
-            System.out.println("Hybrid payload size (bytes)=" + paylBytes.length);
-            for (com.example.common.HybridDualSignature.SignatureEntry e : hds.getSignatures()) {
-                byte[] sig = com.example.common.Base64Url.decode(e.getSignatureB64());
-                System.out.println("Hybrid signature alg=" + e.getAlg() + " size (bytes)=" + sig.length);
-            }
-            // Verify
-            hybridService.verifyHybrid(hds, rsaPub, pqcKeyPair.getPublic(), opts, HybridPolicy.CLASSIC_ONLY);
-            System.out.println("Hybrid verification (CLASSIC_ONLY): OK");
-            hybridService.verifyHybrid(hds, rsaPub, pqcKeyPair.getPublic(), opts, HybridPolicy.PQC_ONLY);
-            System.out.println("Hybrid verification (PQC_ONLY): OK");
-            hybridService.verifyHybrid(hds, rsaPub, pqcKeyPair.getPublic(), opts, HybridPolicy.BOTH_REQUIRED);
-            System.out.println("Hybrid verification (BOTH_REQUIRED): OK");
+            // Verify under different policies
+            compositeService.verifyCompositeToken(compositeToken, compositeKey, opts, CompositePolicy.CLASSIC_ONLY);
+            System.out.println("Composite verification (CLASSIC_ONLY): OK");
+            compositeService.verifyCompositeToken(compositeToken, compositeKey, opts, CompositePolicy.PQC_ONLY);
+            System.out.println("Composite verification (PQC_ONLY): OK");
+            compositeService.verifyCompositeToken(compositeToken, compositeKey, opts, CompositePolicy.BOTH_REQUIRED);
+            System.out.println("Composite verification (BOTH_REQUIRED): OK");
 
+            System.out.println("\nToken size CSV written to target/token_sizes.csv");
             System.out.println("\n=== Demo complete ===");
         } catch (Exception e) {
             System.err.println("Demo failed: " + e.getMessage());
@@ -106,7 +93,7 @@ public class AppMain {
         }
     }
 
-    private static void printTokenParts(String label, String token) {
+    private static void printSizesAndCsv(String label, String token) {
         try {
             String[] parts = token.split("\\.");
             if (parts.length != 3) {
@@ -117,15 +104,13 @@ public class AppMain {
             byte[] payloadBytes = Base64Url.decode(parts[1]);
             byte[] sigBytes = Base64Url.decode(parts[2]);
 
-            String headerJson = new String(headerBytes);
-            TokenHeader header = JsonUtil.fromJson(headerJson, TokenHeader.class);
-
-            System.out.println(label + " header.alg=" + header.getAlg());
             System.out.println(label + " header size (bytes)=" + headerBytes.length);
             System.out.println(label + " payload size (bytes)=" + payloadBytes.length);
             System.out.println(label + " signature size (bytes)=" + sigBytes.length);
+
+            TokenSizeReport.appendRow(label, token);
         } catch (Exception e) {
-            System.out.println(label + " token parts print failed: " + e.getMessage());
+            System.out.println(label + " token size computation failed: " + e.getMessage());
         }
     }
 }

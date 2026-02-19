@@ -2,7 +2,8 @@ package com.example.common;
 
 /**
  * Minimal JWS/JWT header representation for this demo.
- * For PQC tokens, alg must be exactly "DILITHIUM2" or "MLDSA44" (depending on the configured PQC algorithm).
+ * PQC tokens use alg exactly "MLDSA44" (ML-DSA-44).
+ * Composite tokens use alg exactly "RS256+MLDSA44".
  */
 public class TokenHeader {
     private String alg; // required
@@ -20,9 +21,9 @@ public class TokenHeader {
         this.kid = kid;
     }
 
-    public void validateForPqc() {
-        if (alg == null || !( "DILITHIUM2".equals(alg) || "MLDSA44".equals(alg) )) {
-            throw new IllegalArgumentException("For PQC tokens, header.alg must be exactly 'DILITHIUM2' or 'MLDSA44'");
+    public void validatePqc() {
+        if (alg == null || !"MLDSA44".equals(alg)) {
+            throw new IllegalArgumentException("For PQC tokens, header.alg must be exactly 'MLDSA44'");
         }
         if (typ != null && !"JWT".equals(typ)) {
             throw new IllegalArgumentException("For PQC tokens, header.typ must be 'JWT' if present");
@@ -36,6 +37,15 @@ public class TokenHeader {
         // RS256 expected for classic path (not enforced here; caller should enforce)
         if (typ != null && !"JWT".equals(typ)) {
             throw new IllegalArgumentException("Classic header.typ must be 'JWT' if present");
+        }
+    }
+
+    public void validateComposite() {
+        if (alg == null || !"RS256+MLDSA44".equals(alg)) {
+            throw new IllegalArgumentException("For composite tokens, header.alg must be exactly 'RS256+MLDSA44'");
+        }
+        if (typ != null && !"JWT".equals(typ)) {
+            throw new IllegalArgumentException("For composite tokens, header.typ must be 'JWT' if present");
         }
     }
 
